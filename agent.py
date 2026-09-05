@@ -20,6 +20,7 @@ TASKS: behavior is driven by instructions.yaml, not hardcoded here. Each
 import os
 import json
 import time
+import inspect
 
 import ollama
 import yaml
@@ -291,6 +292,34 @@ def default_task_name(tasks_data: dict = None) -> str:
 #    formats differ slightly between Ollama and OpenAI-style APIs. Both
 #    expose the same run_agent_turn(messages, tools, functions) signature.
 # ---------------------------------------------------------------------------
+def _call_tool_safe(fn, args: dict) -> str:
+    """Call a tool function defensively — models (especially smaller local
+    ones) sometimes pass an argument name that doesn't match the schema
+    exactly. Instead of crashing the whole agent loop, drop anything
+    unrecognized and tell the model what happened so it can retry correctly."""
+    try:
+        valid_params = set(inspect.signature(fn).parameters.keys())
+    except (TypeError, ValueError):
+        valid_params = None  # can't introspect (e.g. builtins) — pass through as-is
+
+    if valid_params is not None:
+        filtered_args = {k: v for k, v in args.items() if k in valid_params}
+        dropped = set(args.keys()) - valid_params
+    else:
+        filtered_args, dropped = args, set()
+
+    try:
+        result = fn(**filtered_args)
+    except TypeError as e:
+        return f"Tool call failed — argument error: {e}. Check the tool's parameter names and try again."
+    except Exception as e:
+        return f"Tool execution error: {e}"
+
+    if dropped:
+        result += f"\n(note: ignored unsupported argument(s): {', '.join(dropped)})"
+    return result
+
+
 def _run_turn_ollama(messages, tools, functions) -> str:
     response = ollama_client.chat(model=OLLAMA_MODEL, messages=messages, tools=tools or None)
     msg = response["message"]
@@ -302,7 +331,7 @@ def _run_turn_ollama(messages, tools, functions) -> str:
             fn_args = call["function"]["arguments"]
             print(f"  [tool call] {fn_name}({fn_args})")
             fn = functions.get(fn_name)
-            result = fn(**fn_args) if fn else f"Unknown tool: {fn_name}"
+            result = _call_tool_safe(fn, fn_args) if fn else f"Unknown tool: {fn_name}"
             messages.append({"role": "tool", "content": result})
 
         response = ollama_client.chat(model=OLLAMA_MODEL, messages=messages, tools=tools or None)
@@ -325,7 +354,7 @@ def _run_turn_openai(messages, tools, functions) -> str:
             fn_args = json.loads(call.function.arguments)
             print(f"  [tool call] {fn_name}({fn_args})")
             fn = functions.get(fn_name)
-            result = fn(**fn_args) if fn else f"Unknown tool: {fn_name}"
+            result = _call_tool_safe(fn, fn_args) if fn else f"Unknown tool: {fn_name}"
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
 
         response = _openai_client.chat.completions.create(
