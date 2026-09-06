@@ -17,7 +17,7 @@ COPY tools ./tools
 # Talks to the "ollama" service defined in docker-compose.yml by default.
 # Override with -e OLLAMA_HOST=... if running standalone.
 ENV OLLAMA_HOST=http://ollama:11434
-ENV OLLAMA_MODEL=llama3.2:1b
+ENV OLLAMA_MODEL=llama3.1
 
 EXPOSE 5000
 
